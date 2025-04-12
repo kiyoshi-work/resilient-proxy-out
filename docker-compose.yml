@@ -1,0 +1,46 @@
+version: "3.8"
+services:
+  openresty:
+    build:
+      context: ./docker/openresty
+    container_name: openresty-proxy
+    ports:
+      - "8087:8080"
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - openresty-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    env_file:
+      - .env
+  redis:
+    container_name: redis-proxy
+    image: redis/redis-stack:latest
+    restart: unless-stopped
+    ports:
+      - 6378:6379
+      - 8004:8001
+    networks:
+      - openresty-network
+    environment:
+      REDIS_ARGS: --appendonly yes --protected-mode no --save 20 1 --loglevel warning
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: redis-cli ping
+      interval: 5s
+      timeout: 1s
+      retries: 5
+
+networks:
+  openresty-network:
+    driver: bridge
+
+volumes:
+  redis-data:
+    driver: local
