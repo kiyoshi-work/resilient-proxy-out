@@ -35,13 +35,15 @@ RUN cd /tmp \
     && cp -R lua-resty-openssl/lib/resty/* /usr/local/openresty/lualib/resty/ \
     && rm -rf /tmp/lua-resty-openssl
 
-# create necessary directory
+# create necessary directories
 RUN mkdir -p /usr/local/openresty/lua
+RUN mkdir -p /usr/local/openresty/html
 
 # copy config files
 COPY nginx.conf /usr/local/openresty/nginx/conf/nginx.conf
 COPY conf.d/ /usr/local/openresty/nginx/conf/conf.d/
 COPY lua/ /usr/local/openresty/lua/
+COPY html/ /usr/local/openresty/html/
 
 # check config
 RUN openresty -t

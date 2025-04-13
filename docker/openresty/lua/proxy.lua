@@ -2,9 +2,16 @@ local http = require "resty.http"
 local cjson = require "cjson"
 local utils = require "utils"
 local redis = require "resty.redis"  -- Add Redis library
+local circuit_breaker = require "circuit_breaker"  -- Add Circuit Breaker
 
 -- Configuration
 local target_url = "https://api.hyperliquid.xyz/info"
+local cb_key = circuit_breaker.init(target_url, {
+    failure_threshold = 5,        -- 5 consecutive failures will open the circuit
+    reset_timeout = 30,           -- Wait 30 seconds before trying again
+    request_timeout = 10000,      -- 10 second timeout for requests
+    success_threshold = 2         -- 2 successful requests to close circuit
+})
 
 -- Get proxy URL from nginx variable (defined in nginx.conf)
 -- local proxy_url = ngx.var.proxy_url
@@ -89,6 +96,13 @@ end
 
 -- Function to make the proxied request
 local function make_proxied_request(body)
+    -- Check if circuit is open
+    if not circuit_breaker.allow_request(cb_key) then
+        local time_left = circuit_breaker.time_to_reset(cb_key)
+        utils.log(ngx.WARN, "Circuit is open, rejecting request. Will try again in " .. time_left .. " seconds")
+        return nil, "Service temporarily unavailable. Please try again in " .. time_left .. " seconds"
+    end
+
     -- Check Redis cache first
     local cache_key = "api_cache:" .. ngx.md5(body)
     
@@ -102,6 +116,8 @@ local function make_proxied_request(body)
         if cached_response and cached_response ~= ngx.null then
             utils.log(ngx.INFO, "Redis cache hit for request")
             release_redis(red)
+            -- Record success for circuit breaker (cache hit is a success)
+            circuit_breaker.record_success(cb_key)
             return cjson.decode(cached_response)
         end
         
@@ -146,6 +162,8 @@ local function make_proxied_request(body)
     -- Handle errors
     if not res then
         utils.log(ngx.ERR, "Request failed: " .. (err or "unknown error"))
+        -- Record failure for circuit breaker
+        circuit_breaker.record_failure(cb_key)
         if red then release_redis(red) end
         return nil, "Failed to make request: " .. (err or "unknown error")
     end
@@ -153,6 +171,8 @@ local function make_proxied_request(body)
     -- Check status code
     if res.status < 200 or res.status >= 300 then
         utils.log(ngx.ERR, "API returned error status: " .. res.status)
+        -- Record failure for circuit breaker
+        circuit_breaker.record_failure(cb_key)
         if red then release_redis(red) end
         return nil, "API returned error status: " .. res.status
     end
@@ -161,9 +181,14 @@ local function make_proxied_request(body)
     local response_data, parse_err = utils.parse_json(res.body)
     if not response_data then
         utils.log(ngx.ERR, "Failed to parse response: " .. (parse_err or "unknown error"))
+        -- Record failure for circuit breaker
+        circuit_breaker.record_failure(cb_key)
         if red then release_redis(red) end
         return nil, "Failed to parse response: " .. (parse_err or "unknown error")
     end
+    
+    -- Record success for circuit breaker
+    circuit_breaker.record_success(cb_key)
     
     -- Cache the successful response in Redis
     if red then

@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Circuit Breaker Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            padding: 20px;
+            background-color: #f8f9fa;
+        }
+        .card {
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .card-header {
+            font-weight: bold;
+        }
+        .state-closed {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .state-open {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .state-half-open {
+            background-color: #fff3cd;
+            color: #856404;
+        }
+        .progress {
+            height: 20px;
+            margin-bottom: 10px;
+        }
+        .refresh-controls {
+            margin-bottom: 20px;
+        }
+        #last-updated {
+            font-style: italic;
+            color: #6c757d;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="mb-4">Circuit Breaker Dashboard</h1>
+        
+        <div class="refresh-controls d-flex justify-content-between align-items-center">
+            <div>
+                <button id="refresh-btn" class="btn btn-primary">Refresh Now</button>
+                <div class="form-check form-switch d-inline-block ms-3">
+                    <input class="form-check-input" type="checkbox" id="auto-refresh" checked>
+                    <label class="form-check-label" for="auto-refresh">Auto-refresh</label>
+                </div>
+                <select id="refresh-interval" class="form-select d-inline-block ms-2" style="width: auto;">
+                    <option value="5000">5 seconds</option>
+                    <option value="10000" selected>10 seconds</option>
+                    <option value="30000">30 seconds</option>
+                    <option value="60000">1 minute</option>
+                </select>
+            </div>
+            <div id="last-updated">Last updated: Never</div>
+        </div>
+        
+        <div id="circuits-container">
+            <div class="text-center py-5">
+                <div class="spinner-border" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                </div>
+                <p class="mt-2">Loading circuit breaker status...</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // DOM elements
+        const circuitsContainer = document.getElementById('circuits-container');
+        const refreshBtn = document.getElementById('refresh-btn');
+        const autoRefreshCheckbox = document.getElementById('auto-refresh');
+        const refreshIntervalSelect = document.getElementById('refresh-interval');
+        const lastUpdatedElement = document.getElementById('last-updated');
+        
+        // State
+        let refreshInterval;
+        let circuits = [];
+        
+        // Functions
+        function formatDateTime(timestamp) {
+            return new Date(timestamp * 1000).toLocaleString();
+        }
+        
+        function formatTimeAgo(timestamp) {
+            const seconds = Math.floor((Date.now() / 1000) - timestamp);
+            
+            if (seconds < 60) {
+                return `${seconds} seconds ago`;
+            } else if (seconds < 3600) {
+                return `${Math.floor(seconds / 60)} minutes ago`;
+            } else if (seconds < 86400) {
+                return `${Math.floor(seconds / 3600)} hours ago`;
+            } else {
+                return `${Math.floor(seconds / 86400)} days ago`;
+            }
+        }
+        
+        function getStateClass(state) {
+            switch (state) {
+                case 'CLOSED': return 'state-closed';
+                case 'OPEN': return 'state-open';
+                case 'HALF_OPEN': return 'state-half-open';
+                default: return '';
+            }
+        }
+        
+        function renderCircuits() {
+            if (circuits.length === 0) {
+                circuitsContainer.innerHTML = `
+                    <div class="alert alert-info">
+                        No circuit breakers found. Make sure your application has initialized circuit breakers.
+                    </div>
+                `;
+                return;
+            }
+            
+            let html = '';
+            
+            circuits.forEach(circuit => {
+                const stateClass = getStateClass(circuit.state);
+                const failurePercentage = (circuit.failures / circuit.config.failure_threshold) * 100;
+                const successPercentage = (circuit.successes / circuit.config.success_threshold) * 100;
+                
+                html += `
+                    <div class="card">
+                        <div class="card-header ${stateClass}">
+                            ${circuit.target} - ${circuit.state}
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <h5>Status</h5>
+                                    <p>Current State: <strong>${circuit.state}</strong></p>
+                                    ${circuit.state === 'OPEN' ? 
+                                        `<p>Time until half-open: <strong>${circuit.time_to_reset} seconds</strong></p>` : ''}
+                                    
+                                    <h5 class="mt-3">Counters</h5>
+                                    <p>Failures: <strong>${circuit.failures} / ${circuit.config.failure_threshold}</strong></p>
+                                    <div class="progress">
+                                        <div class="progress-bar bg-danger" role="progressbar" 
+                                            style="width: ${Math.min(100, failurePercentage)}%" 
+                                            aria-valuenow="${circuit.failures}" 
+                                            aria-valuemin="0" 
+                                            aria-valuemax="${circuit.config.failure_threshold}"></div>
+                                    </div>
+                                    
+                                    <p>Successes: <strong>${circuit.successes} / ${circuit.config.success_threshold}</strong></p>
+                                    <div class="progress">
+                                        <div class="progress-bar bg-success" role="progressbar" 
+                                            style="width: ${Math.min(100, successPercentage)}%" 
+                                            aria-valuenow="${circuit.successes}" 
+                                            aria-valuemin="0" 
+                                            aria-valuemax="${circuit.config.success_threshold}"></div>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <h5>Configuration</h5>
+                                    <ul>
+                                        <li>Failure Threshold: ${circuit.config.failure_threshold}</li>
+                                        <li>Reset Timeout: ${circuit.config.reset_timeout} seconds</li>
+                                        <li>Success Threshold: ${circuit.config.success_threshold}</li>
+                                    </ul>
+                                    
+                                    <h5 class="mt-3">Last Failure</h5>
+                                    ${circuit.last_failure_time > 0 ? 
+                                        `<p>${formatDateTime(circuit.last_failure_time)} (${formatTimeAgo(circuit.last_failure_time)})</p>` : 
+                                        '<p>No failures recorded</p>'}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            circuitsContainer.innerHTML = html;
+        }
+        
+        async function fetchCircuitStatus() {
+            try {
+                const response = await fetch('/circuit-status');
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                circuits = data.circuits;
+                
+                // Update last updated time
+                lastUpdatedElement.textContent = `Last updated: ${new Date().toLocaleString()}`;
+                
+                // Render the circuits
+                renderCircuits();
+            } catch (error) {
+                console.error('Error fetching circuit status:', error);
+                circuitsContainer.innerHTML = `
+                    <div class="alert alert-danger">
+                        Error fetching circuit status: ${error.message}
+                    </div>
+                `;
+            }
+        }
+        
+        function startAutoRefresh() {
+            const interval = parseInt(refreshIntervalSelect.value);
+            clearInterval(refreshInterval);
+            
+            if (autoRefreshCheckbox.checked) {
+                refreshInterval = setInterval(fetchCircuitStatus, interval);
+            }
+        }
+        
+        // Event listeners
+        refreshBtn.addEventListener('click', fetchCircuitStatus);
+        
+        autoRefreshCheckbox.addEventListener('change', () => {
+            startAutoRefresh();
+        });
+        
+        refreshIntervalSelect.addEventListener('change', () => {
+            startAutoRefresh();
+        });
+        
+        // Initial fetch
+        fetchCircuitStatus();
+        startAutoRefresh();
+    </script>
+</body>
+</html> 

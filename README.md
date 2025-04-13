@@ -2,11 +2,11 @@
 
 A resilient proxy built with OpenResty and Redis, designed to provide caching, rate limiting, and proxying capabilities for third party APIs.
 
-## Overview
-- Request caching to reduce API load
-- Automatic failover to direct IP addresses when DNS fails
-- Optional proxy support for rate limit management
-- High performance through OpenResty/Nginx
+## Features
+
+- **Circuit Breaker Pattern**: Automatically detects failing services and prevents cascading failures
+- **Request Caching**: Reduces load on backend services by caching responses in Redis
+- **Proxy Support**: Optional proxy configuration for handling rate-limited APIs
 
 ## Getting Started
 
@@ -46,16 +46,21 @@ A resilient proxy built with OpenResty and Redis, designed to provide caching, r
    ```
 
 ### Project Structure
-
+```bash
 docker/
 ├── openresty/
 │   ├── conf.d/proxy.conf    # Nginx proxy config
+│   ├── html/*.html    # Circuit Breaker Dashboard
 │   ├── lua/
 │   │   ├── proxy.lua        # Main proxy logic
 │   │   └── utils.lua        # Utility functions
 │   ├── Dockerfile
 │   └── nginx.conf
-
+├── tests/
+│   └── test_*.sh    # Test script for circuit breaker
+├── README.md
+└── .env.sample
+```
 
 ## Usage
 ### Making API Requests
