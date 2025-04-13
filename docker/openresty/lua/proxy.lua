@@ -1,12 +1,15 @@
 local http = require "resty.http"
 local cjson = require "cjson"
 local utils = require "utils"
+local redis = require "resty.redis"  -- Add Redis library
 
 -- Configuration
 local target_url = "https://api.hyperliquid.xyz/info"
 
 -- Get proxy URL from nginx variable (defined in nginx.conf)
-local proxy_url = ngx.var.proxy_url
+-- local proxy_url = ngx.var.proxy_url
+
+local proxy_url = os.getenv("PROXY_URL")
 local use_proxy = proxy_url and proxy_url ~= ""
 
 if use_proxy then
@@ -42,19 +45,71 @@ if use_proxy then
     proxy_password = proxy_password or "1cysf56k28h3"
 end
 
--- Cache configuration
-local cache = ngx.shared.api_cache
-local cache_ttl = 60  -- Cache TTL in seconds
+-- Redis configuration from nginx variables
+-- local redis_host = ngx.var.redis_host or "redis"
+local redis_host = os.getenv("REDIS_HOST")
+local redis_port = tonumber(os.getenv("REDIS_PORT") or 6379)
+local redis_password = os.getenv("REDIS_PASSWORD") or nil
+local redis_timeout = tonumber(os.getenv("REDIS_TIMEOUT") or 1000)  -- 1 second
+local redis_pool_size = tonumber(os.getenv("REDIS_POOL_SIZE") or 100)
+local redis_pool_idle_timeout = tonumber(os.getenv("REDIS_POOL_IDLE_TIMEOUT") or 10000)  -- 10 seconds
+local cache_ttl = tonumber(os.getenv("CACHE_TTL") or 60)  -- Cache TTL in seconds
+
+-- Function to get Redis connection
+local function get_redis()
+    local red = redis:new()
+    red:set_timeout(redis_timeout)
+    local ok, err = red:connect(redis_host, redis_port)
+    if not ok then
+        utils.log(ngx.ERR, "Failed to connect to Redis: " .. (err or "unknown error"))
+        return nil, err
+    end
+    
+    -- Authenticate if password is provided
+    if redis_password then
+        local auth_ok, auth_err = red:auth(redis_password)
+        if not auth_ok then
+            utils.log(ngx.ERR, "Failed to authenticate with Redis: " .. (auth_err or "unknown error"))
+            return nil, auth_err
+        end
+    end
+    utils.log(ngx.INFO, "Redis connected successfully to " .. redis_host .. ":" .. redis_port)
+    return red
+end
+
+-- Function to release Redis connection back to the connection pool
+local function release_redis(red)
+    if not red then return end
+    
+    local ok, err = red:set_keepalive(redis_pool_idle_timeout, redis_pool_size)
+    if not ok then
+        utils.log(ngx.ERR, "Failed to set Redis keepalive: " .. (err or "unknown error"))
+    end
+end
 
 -- Function to make the proxied request
 local function make_proxied_request(body)
-    -- Check cache first
-    local cache_key = ngx.md5(body)
-    local cached_response = cache:get(cache_key)
+    -- Check Redis cache first
+    local cache_key = "api_cache:" .. ngx.md5(body)
     
-    if cached_response then
-        utils.log(ngx.INFO, "Cache hit for request")
-        return cjson.decode(cached_response)
+    -- Get Redis connection
+    local red, conn_err = get_redis()
+    if not red then
+        utils.log(ngx.WARN, "Proceeding without cache due to Redis connection error: " .. (conn_err or "unknown error"))
+    else
+        -- Try to get cached response
+        local cached_response, cache_err = red:get(cache_key)
+        if cached_response and cached_response ~= ngx.null then
+            utils.log(ngx.INFO, "Redis cache hit for request")
+            release_redis(red)
+            return cjson.decode(cached_response)
+        end
+        
+        if cache_err then
+            utils.log(ngx.WARN, "Redis cache get error: " .. cache_err)
+        else
+            utils.log(ngx.INFO, "Redis cache miss for request")
+        end
     end
     
     -- Create HTTP client
@@ -91,12 +146,14 @@ local function make_proxied_request(body)
     -- Handle errors
     if not res then
         utils.log(ngx.ERR, "Request failed: " .. (err or "unknown error"))
+        if red then release_redis(red) end
         return nil, "Failed to make request: " .. (err or "unknown error")
     end
     
     -- Check status code
     if res.status < 200 or res.status >= 300 then
         utils.log(ngx.ERR, "API returned error status: " .. res.status)
+        if red then release_redis(red) end
         return nil, "API returned error status: " .. res.status
     end
     
@@ -104,11 +161,18 @@ local function make_proxied_request(body)
     local response_data, parse_err = utils.parse_json(res.body)
     if not response_data then
         utils.log(ngx.ERR, "Failed to parse response: " .. (parse_err or "unknown error"))
+        if red then release_redis(red) end
         return nil, "Failed to parse response: " .. (parse_err or "unknown error")
     end
     
-    -- Cache the successful response
-    cache:set(cache_key, res.body, cache_ttl)
+    -- Cache the successful response in Redis
+    if red then
+        local ok, set_err = red:setex(cache_key, cache_ttl, res.body)
+        if not ok then
+            utils.log(ngx.WARN, "Failed to set Redis cache: " .. (set_err or "unknown error"))
+        end
+        release_redis(red)
+    end
     
     return response_data
 end
