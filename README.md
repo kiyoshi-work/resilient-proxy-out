@@ -52,7 +52,8 @@ docker/
 │   ├── conf.d/proxy.conf    # Nginx proxy config
 │   ├── html/*.html    # Circuit Breaker Dashboard
 │   ├── lua/
-│   │   ├── proxy.lua        # Main proxy logic
+│   │   ├── api_config.lua        # API configuration
+│   │   ├── api_proxy.lua        # Main proxy logic
 │   │   └── utils.lua        # Utility functions
 │   ├── Dockerfile
 │   └── nginx.conf

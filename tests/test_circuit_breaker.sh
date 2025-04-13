@@ -55,7 +55,7 @@ fi
 # Step 2: Force failures to trigger circuit breaker
 echo -e "\n${YELLOW}Step 2: Forcing failures to trigger circuit breaker${NC}"
 echo "We'll temporarily modify the target URL in the proxy to cause failures."
-echo "Please manually update the target_url in proxy.lua to an invalid URL (e.g., https://invalid.example.com)"
+echo "Please manually update the target_url in api_proxy.lua to an invalid URL (e.g., https://invalid.example.com)"
 echo "Then restart your OpenResty container."
 
 read -p "Press Enter after you've made the change and restarted OpenResty..."
@@ -93,7 +93,7 @@ fi
 
 # Step 5: Restore service and wait for recovery
 echo -e "\n${YELLOW}Step 5: Restoring service and waiting for recovery${NC}"
-echo "Please restore the original target_url in proxy.lua and restart OpenResty."
+echo "Please restore the original target_url in api_proxy.lua and restart OpenResty."
 read -p "Press Enter after you've made the change and restarted OpenResty..."
 
 # Step 6: Wait for circuit to transition to half-open
