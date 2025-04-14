@@ -1,0 +1,818 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Statistics Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            padding-top: 20px;
+            background-color: #f8f9fa;
+        }
+        .card {
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .card-header {
+            background-color: #f1f8ff;
+            font-weight: bold;
+        }
+        .stats-container {
+            padding: 20px;
+        }
+        .metric-card {
+            text-align: center;
+            padding: 15px;
+        }
+        .metric-value {
+            font-size: 24px;
+            font-weight: bold;
+        }
+        .metric-label {
+            font-size: 14px;
+            color: #6c757d;
+        }
+        .chart-container {
+            position: relative;
+            height: 300px;
+            margin-bottom: 20px;
+        }
+        .status-badge {
+            font-size: 14px;
+            margin-right: 5px;
+            margin-bottom: 5px;
+        }
+        .error-item {
+            border-left: 4px solid #dc3545;
+            padding-left: 10px;
+            margin-bottom: 10px;
+        }
+        .error-time {
+            font-size: 12px;
+            color: #6c757d;
+        }
+        .error-message {
+            font-size: 14px;
+        }
+        .error-status {
+            font-weight: bold;
+        }
+        .loading {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 200px;
+        }
+        .path-item {
+            cursor: pointer;
+            padding: 8px 15px;
+            border-radius: 4px;
+            margin-bottom: 5px;
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            transition: background-color 0.2s;
+        }
+        .path-item:hover {
+            background-color: #e9ecef;
+        }
+        .path-item.active {
+            background-color: #007bff;
+            color: white;
+            border-color: #007bff;
+        }
+        .path-count {
+            float: right;
+            font-weight: bold;
+            color: #6c757d;
+        }
+        .path-item.active .path-count {
+            color: rgba(255, 255, 255, 0.8);
+        }
+        .breadcrumb-item a {
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container stats-container">
+        <h1 class="mb-4">API Statistics Dashboard</h1>
+        
+        <div class="row mb-4">
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        API Selection
+                    </div>
+                    <div class="card-body">
+                        <select id="apiSelect" class="form-select mb-3">
+                            <option value="">Loading APIs...</option>
+                        </select>
+                        <div class="btn-group" role="group">
+                            <button type="button" class="btn btn-primary" id="periodAll">All Time</button>
+                            <button type="button" class="btn btn-outline-primary" id="periodDaily">Daily</button>
+                            <button type="button" class="btn btn-outline-primary" id="periodHourly">Hourly</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        Auto-Refresh
+                    </div>
+                    <div class="card-body">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" id="autoRefreshToggle">
+                            <label class="form-check-label" for="autoRefreshToggle">Auto-refresh data</label>
+                        </div>
+                        <select id="refreshInterval" class="form-select mt-2">
+                            <option value="5000">Every 5 seconds</option>
+                            <option value="10000" selected>Every 10 seconds</option>
+                            <option value="30000">Every 30 seconds</option>
+                            <option value="60000">Every minute</option>
+                        </select>
+                        <div class="mt-2">
+                            <span id="lastUpdated" class="text-muted">Last updated: Never</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div id="breadcrumbContainer" class="mb-4" style="display: none;">
+            <nav aria-label="breadcrumb">
+                <ol class="breadcrumb">
+                    <li class="breadcrumb-item"><a href="#" id="breadcrumbApi">API</a></li>
+                    <li class="breadcrumb-item active" id="breadcrumbPath">Path</li>
+                </ol>
+            </nav>
+        </div>
+        
+        <div id="pathsContainer" class="mb-4" style="display: none;">
+            <div class="card">
+                <div class="card-header">
+                    API Paths
+                </div>
+                <div class="card-body">
+                    <div id="pathsList">
+                        <div class="loading">
+                            <div class="spinner-border text-primary" role="status">
+                                <span class="visually-hidden">Loading...</span>
+                            </div>
+                            <span class="ms-2">Loading paths...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div id="statsContent">
+            <div class="loading">
+                <div class="spinner-border text-primary" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                </div>
+                <span class="ms-2">Loading statistics...</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // DOM elements
+        const apiSelect = document.getElementById('apiSelect');
+        const periodAllBtn = document.getElementById('periodAll');
+        const periodDailyBtn = document.getElementById('periodDaily');
+        const periodHourlyBtn = document.getElementById('periodHourly');
+        const autoRefreshToggle = document.getElementById('autoRefreshToggle');
+        const refreshInterval = document.getElementById('refreshInterval');
+        const lastUpdated = document.getElementById('lastUpdated');
+        const statsContent = document.getElementById('statsContent');
+        const pathsContainer = document.getElementById('pathsContainer');
+        const pathsList = document.getElementById('pathsList');
+        const breadcrumbContainer = document.getElementById('breadcrumbContainer');
+        const breadcrumbApi = document.getElementById('breadcrumbApi');
+        const breadcrumbPath = document.getElementById('breadcrumbPath');
+
+        // State variables
+        let currentApi = null;
+        let currentPath = null;
+        let currentPeriod = 'all';
+        let refreshTimer = null;
+        let apiPaths = [];
+
+        // Initialize the dashboard
+        async function initDashboard() {
+            try {
+                // Fetch available APIs
+                const response = await fetch('/api-stats');
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                // Populate API select dropdown
+                apiSelect.innerHTML = '';
+                apiSelect.innerHTML = '<option value="">Select an API</option>';
+                
+                // Ensure data.apis is an array
+                const apis = Array.isArray(data.apis) ? data.apis : 
+                             (data.apis ? Object.values(data.apis) : []);
+                
+                apis.forEach(api => {
+                    const option = document.createElement('option');
+                    option.value = api;
+                    option.textContent = api;
+                    apiSelect.appendChild(option);
+                });
+                
+                // Set up event listeners
+                apiSelect.addEventListener('change', handleApiChange);
+                periodAllBtn.addEventListener('click', () => setPeriod('all'));
+                periodDailyBtn.addEventListener('click', () => setPeriod('daily'));
+                periodHourlyBtn.addEventListener('click', () => setPeriod('hourly'));
+                autoRefreshToggle.addEventListener('change', toggleAutoRefresh);
+                refreshInterval.addEventListener('change', updateRefreshInterval);
+                breadcrumbApi.addEventListener('click', navigateToApi);
+                
+                // Check for URL parameters
+                const urlParams = new URLSearchParams(window.location.search);
+                const apiParam = urlParams.get('api');
+                const pathParam = urlParams.get('path');
+                const periodParam = urlParams.get('period');
+                
+                if (apiParam) {
+                    apiSelect.value = apiParam;
+                    if (periodParam) {
+                        currentPeriod = periodParam;
+                        updatePeriodButtons();
+                    }
+                    await handleApiChange();
+                    
+                    if (pathParam) {
+                        currentPath = pathParam;
+                        await loadPathStats();
+                    }
+                }
+            } catch (error) {
+                console.error('Error initializing dashboard:', error);
+                statsContent.innerHTML = `
+                    <div class="alert alert-danger">
+                        Error initializing dashboard: ${error.message}
+                    </div>
+                `;
+            }
+        }
+
+        // Handle API selection change
+        async function handleApiChange() {
+            const selectedApi = apiSelect.value;
+            
+            if (!selectedApi) {
+                statsContent.innerHTML = '<div class="alert alert-info">Please select an API to view statistics.</div>';
+                pathsContainer.style.display = 'none';
+                breadcrumbContainer.style.display = 'none';
+                currentApi = null;
+                currentPath = null;
+                return;
+            }
+            
+            currentApi = selectedApi;
+            currentPath = null;
+            
+            // Update URL
+            const url = new URL(window.location);
+            url.searchParams.set('api', currentApi);
+            url.searchParams.delete('path');
+            window.history.pushState({}, '', url);
+            
+            // Update breadcrumb
+            breadcrumbApi.textContent = currentApi;
+            breadcrumbContainer.style.display = 'none';
+            
+            // Show loading state
+            statsContent.innerHTML = `
+                <div class="loading">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <span class="ms-2">Loading statistics...</span>
+                </div>
+            `;
+            
+            // Load API paths
+            await loadApiPaths();
+            
+            // Load API statistics
+            await loadApiStats();
+            
+            // Start auto-refresh if enabled
+            startAutoRefresh();
+        }
+
+        // Load API paths
+        async function loadApiPaths() {
+            try {
+                const response = await fetch(`/api-stats?api=${currentApi}&paths=true`);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                apiPaths = data.paths || [];
+                
+                // Render paths list
+                renderPathsList();
+                
+                // Show paths container if there are paths
+                pathsContainer.style.display = apiPaths.length > 0 ? 'block' : 'none';
+            } catch (error) {
+                console.error('Error loading API paths:', error);
+                pathsContainer.style.display = 'none';
+            }
+        }
+
+        // Render the list of API paths
+        function renderPathsList() {
+            if (!apiPaths || apiPaths.length === 0) {
+                pathsList.innerHTML = '<div class="alert alert-info">No paths found for this API.</div>';
+                return;
+            }
+            
+            // Sort paths by name
+            apiPaths.sort();
+            
+            let html = '';
+            
+            for (const path of apiPaths) {
+                const isActive = path === currentPath;
+                html += `
+                    <div class="path-item ${isActive ? 'active' : ''}" data-path="${path}" onclick="selectPath('${path}')">
+                        ${path}
+                    </div>
+                `;
+            }
+            
+            pathsList.innerHTML = html;
+            
+            // Add event listeners to path items
+            document.querySelectorAll('.path-item').forEach(item => {
+                item.addEventListener('click', function() {
+                    const path = this.getAttribute('data-path');
+                    selectPath(path);
+                });
+            });
+        }
+
+        // Select a path
+        async function selectPath(path) {
+            currentPath = path;
+            
+            // Update URL
+            const url = new URL(window.location);
+            url.searchParams.set('path', path);
+            window.history.pushState({}, '', url);
+            
+            // Update breadcrumb
+            breadcrumbPath.textContent = path;
+            breadcrumbContainer.style.display = 'block';
+            
+            // Update active path in the list
+            document.querySelectorAll('.path-item').forEach(item => {
+                if (item.getAttribute('data-path') === path) {
+                    item.classList.add('active');
+                } else {
+                    item.classList.remove('active');
+                }
+            });
+            
+            // Load path statistics
+            await loadPathStats();
+            
+            // Start auto-refresh if enabled
+            startAutoRefresh();
+        }
+
+        // Navigate back to API level
+        function navigateToApi(event) {
+            event.preventDefault();
+            currentPath = null;
+            
+            // Update URL
+            const url = new URL(window.location);
+            url.searchParams.delete('path');
+            window.history.pushState({}, '', url);
+            
+            // Hide breadcrumb
+            breadcrumbContainer.style.display = 'none';
+            
+            // Remove active class from all path items
+            document.querySelectorAll('.path-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            
+            // Load API statistics
+            loadApiStats();
+        }
+
+        // Load API statistics
+        async function loadApiStats() {
+            try {
+                const response = await fetch(`/api-stats?api=${currentApi}&period=${currentPeriod}`);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                const stats = data.stats;
+                
+                // Update last updated time
+                lastUpdated.textContent = `Last updated: ${new Date().toLocaleString()}`;
+                
+                // Render API statistics
+                renderApiStats(stats);
+            } catch (error) {
+                console.error('Error loading API statistics:', error);
+                statsContent.innerHTML = `
+                    <div class="alert alert-danger">
+                        Error loading API statistics: ${error.message}
+                    </div>
+                `;
+            }
+        }
+
+        // Load path statistics
+        async function loadPathStats() {
+            try {
+                const response = await fetch(`/api-stats?api=${currentApi}&path=${currentPath}&period=${currentPeriod}`);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                const stats = data.stats;
+                
+                // Update last updated time
+                lastUpdated.textContent = `Last updated: ${new Date().toLocaleString()}`;
+                
+                // Render path statistics
+                renderPathStats(stats);
+            } catch (error) {
+                console.error('Error loading path statistics:', error);
+                statsContent.innerHTML = `
+                    <div class="alert alert-danger">
+                        Error loading path statistics: ${error.message}
+                    </div>
+                `;
+            }
+        }
+
+        // Render API statistics
+        function renderApiStats(stats) {
+            let periodText = 'All Time';
+            if (currentPeriod === 'daily') periodText = 'Daily';
+            if (currentPeriod === 'hourly') periodText = 'Hourly';
+            
+            let html = `
+                <h2 class="mb-4">Statistics for ${currentApi} (${periodText})</h2>
+                
+                <div class="row mb-4">
+                    <div class="col-md-4">
+                        <div class="card metric-card">
+                            <div class="metric-value">${stats.total || 0}</div>
+                            <div class="metric-label">Total Requests</div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card metric-card">
+                            <div class="metric-value">${stats.success || 0}</div>
+                            <div class="metric-label">Successful Requests</div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card metric-card">
+                            <div class="metric-value">${stats.failure || 0}</div>
+                            <div class="metric-label">Failed Requests</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            // Add response time statistics if available
+            if (stats.response_time) {
+                html += `
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            Response Time Statistics
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-md-3">
+                                    <div class="metric-card">
+                                        <div class="metric-value">${stats.response_time.min ? stats.response_time.min.toFixed(2) + 'ms' : 'N/A'}</div>
+                                        <div class="metric-label">Min Response Time</div>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="metric-card">
+                                        <div class="metric-value">${stats.response_time.p50 ? stats.response_time.p50.toFixed(2) + 'ms' : 'N/A'}</div>
+                                        <div class="metric-label">Median Response Time</div>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="metric-card">
+                                        <div class="metric-value">${stats.response_time.p95 ? stats.response_time.p95.toFixed(2) + 'ms' : 'N/A'}</div>
+                                        <div class="metric-label">95th Percentile</div>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="metric-card">
+                                        <div class="metric-value">${stats.response_time.max ? stats.response_time.max.toFixed(2) + 'ms' : 'N/A'}</div>
+                                        <div class="metric-label">Max Response Time</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // Add status code statistics if available
+            if (stats.status_codes && Object.keys(stats.status_codes).length > 0) {
+                html += `
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            Status Code Distribution
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                `;
+                
+                for (const [status, count] of Object.entries(stats.status_codes)) {
+                    let badgeClass = 'bg-success';
+                    if (status >= 400 && status < 500) badgeClass = 'bg-warning';
+                    if (status >= 500) badgeClass = 'bg-danger';
+                    
+                    html += `
+                        <div class="col-md-2 mb-2">
+                            <div class="card metric-card">
+                                <div class="metric-value">
+                                    <span class="badge ${badgeClass}">${status}</span>
+                                </div>
+                                <div class="metric-value">${count}</div>
+                                <div class="metric-label">Requests</div>
+                            </div>
+                        </div>
+                    `;
+                }
+                
+                html += `
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // Add recent errors if available
+            if (stats.recent_errors && stats.recent_errors.length > 0) {
+                html += `
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            Recent Errors
+                        </div>
+                        <div class="card-body">
+                `;
+                
+                for (const error of stats.recent_errors) {
+                    const date = new Date(error.time * 1000).toLocaleString();
+                    html += `
+                        <div class="error-item">
+                            <div class="error-time">${date}</div>
+                            <div class="error-status">Status: ${error.status || 'Unknown'}</div>
+                            <div class="error-message">${error.message || 'No error message'}</div>
+                        </div>
+                    `;
+                }
+                
+                html += `
+                        </div>
+                    </div>
+                `;
+            }
+            
+            statsContent.innerHTML = html;
+        }
+
+        // Render path statistics
+        function renderPathStats(stats) {
+            let periodText = 'All Time';
+            if (currentPeriod === 'daily') periodText = 'Daily';
+            if (currentPeriod === 'hourly') periodText = 'Hourly';
+            
+            let html = `
+                <h2 class="mb-4">Statistics for ${currentApi}${currentPath} (${periodText})</h2>
+                
+                <div class="row mb-4">
+                    <div class="col-md-4">
+                        <div class="card metric-card">
+                            <div class="metric-value">${stats.total || 0}</div>
+                            <div class="metric-label">Total Requests</div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card metric-card">
+                            <div class="metric-value">${stats.success || 0}</div>
+                            <div class="metric-label">Successful Requests</div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card metric-card">
+                            <div class="metric-value">${stats.failure || 0}</div>
+                            <div class="metric-label">Failed Requests</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            // Add response time statistics if available
+            if (stats.response_time) {
+                html += `
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            Response Time Statistics
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-md-3">
+                                    <div class="metric-card">
+                                        <div class="metric-value">${stats.response_time.min ? stats.response_time.min.toFixed(2) + 'ms' : 'N/A'}</div>
+                                        <div class="metric-label">Min Response Time</div>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="metric-card">
+                                        <div class="metric-value">${stats.response_time.p50 ? stats.response_time.p50.toFixed(2) + 'ms' : 'N/A'}</div>
+                                        <div class="metric-label">Median Response Time</div>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="metric-card">
+                                        <div class="metric-value">${stats.response_time.p95 ? stats.response_time.p95.toFixed(2) + 'ms' : 'N/A'}</div>
+                                        <div class="metric-label">95th Percentile</div>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="metric-card">
+                                        <div class="metric-value">${stats.response_time.max ? stats.response_time.max.toFixed(2) + 'ms' : 'N/A'}</div>
+                                        <div class="metric-label">Max Response Time</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // Add status code statistics if available
+            if (stats.status_codes && Object.keys(stats.status_codes).length > 0) {
+                html += `
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            Status Code Distribution
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                `;
+                
+                for (const [status, count] of Object.entries(stats.status_codes)) {
+                    let badgeClass = 'bg-success';
+                    if (status >= 400 && status < 500) badgeClass = 'bg-warning';
+                    if (status >= 500) badgeClass = 'bg-danger';
+                    
+                    html += `
+                        <div class="col-md-2 mb-2">
+                            <div class="card metric-card">
+                                <div class="metric-value">
+                                    <span class="badge ${badgeClass}">${status}</span>
+                                </div>
+                                <div class="metric-value">${count}</div>
+                                <div class="metric-label">Requests</div>
+                            </div>
+                        </div>
+                    `;
+                }
+                
+                html += `
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // Add recent errors if available
+            if (stats.recent_errors && stats.recent_errors.length > 0) {
+                html += `
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            Recent Errors
+                        </div>
+                        <div class="card-body">
+                `;
+                
+                for (const error of stats.recent_errors) {
+                    const date = new Date(error.time * 1000).toLocaleString();
+                    html += `
+                        <div class="error-item">
+                            <div class="error-time">${date}</div>
+                            <div class="error-status">Status: ${error.status || 'Unknown'}</div>
+                            <div class="error-message">${error.message || 'No error message'}</div>
+                        </div>
+                    `;
+                }
+                
+                html += `
+                        </div>
+                    </div>
+                `;
+            }
+            
+            statsContent.innerHTML = html;
+        }
+
+        // Set the current period
+        function setPeriod(period) {
+            currentPeriod = period;
+            
+            // Update URL
+            const url = new URL(window.location);
+            url.searchParams.set('period', period);
+            window.history.pushState({}, '', url);
+            
+            // Update period buttons
+            updatePeriodButtons();
+            
+            // Reload statistics
+            if (currentPath) {
+                loadPathStats();
+            } else if (currentApi) {
+                loadApiStats();
+            }
+        }
+
+        // Update period buttons
+        function updatePeriodButtons() {
+            periodAllBtn.className = currentPeriod === 'all' ? 'btn btn-primary' : 'btn btn-outline-primary';
+            periodDailyBtn.className = currentPeriod === 'daily' ? 'btn btn-primary' : 'btn btn-outline-primary';
+            periodHourlyBtn.className = currentPeriod === 'hourly' ? 'btn btn-primary' : 'btn btn-outline-primary';
+        }
+
+        // Toggle auto-refresh
+        function toggleAutoRefresh() {
+            if (autoRefreshToggle.checked) {
+                startAutoRefresh();
+            } else {
+                stopAutoRefresh();
+            }
+        }
+
+        // Start auto-refresh
+        function startAutoRefresh() {
+            if (!autoRefreshToggle.checked) return;
+            
+            stopAutoRefresh();
+            
+            const interval = parseInt(refreshInterval.value);
+            refreshTimer = setInterval(() => {
+                if (currentPath) {
+                    loadPathStats();
+                } else if (currentApi) {
+                    loadApiStats();
+                    loadApiPaths();
+                }
+            }, interval);
+        }
+
+        // Stop auto-refresh
+        function stopAutoRefresh() {
+            if (refreshTimer) {
+                clearInterval(refreshTimer);
+                refreshTimer = null;
+            }
+        }
+
+        // Update refresh interval
+        function updateRefreshInterval() {
+            if (autoRefreshToggle.checked) {
+                startAutoRefresh();
+            }
+        }
+
+        // Initialize the dashboard when the page loads
+        window.addEventListener('DOMContentLoaded', initDashboard);
+
+        // Make selectPath function available globally
+        window.selectPath = selectPath;
+    </script>
+</body>
+</html>

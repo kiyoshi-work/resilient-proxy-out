@@ -24,7 +24,17 @@ A resilient proxy built with OpenResty and Redis, designed to provide caching, r
     - `backoff_factor`: Exponential backoff multiplier (default: 2)
     - `retry_on_status`: HTTP status codes that trigger a retry (default: 500, 502, 503, 504, 429)
     - `retry_on_errors`: Connection errors that trigger a retry (default: timeout, connection refused, etc.)
+- **Detailed API Statistics**: Comprehensive statistics tracking for all API calls with a visual dashboard:
+    - **Path-Level Statistics**: Track and analyze API usage at both the API and individual path levels
+    - **Response Time Metrics**: Monitor min, median, 95th percentile, and max response times
+    - **Status Code Distribution**: Visualize the distribution of HTTP status codes
+    - **Error Tracking**: Log and display recent error messages for troubleshooting
+    - **Time-Based Analysis**: View statistics for all time, daily, or hourly periods
+    - **Auto-Refresh**: Configure automatic dashboard updates at customizable intervals
 
+- **Dashboards & Monitoring**: The proxy includes several built-in dashboards for monitoring and troubleshooting:
+  - **Statistics Dashboard**: `/stats-dashboard` - path-level statistics, response time metrics, status code distribution, error tracking, time-based analysis (all/daily/hourly), and auto-refresh capabilities
+  - **Circuit Breaker Dashboard**: `/cb-dashboard` - Real-time circuit status (closed/open/half-open), failure counts, configuration details, and reset timers
 
 
 ## Getting Started

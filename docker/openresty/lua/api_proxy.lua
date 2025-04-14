@@ -5,6 +5,7 @@ local redis = require "resty.redis"
 local circuit_breaker = require "circuit_breaker"
 local api_config = require "api_config"
 local retry_handler = require "retry_handler"
+local api_stats = require "api_stats"
 
 -- Main function
 local function main()
@@ -94,6 +95,9 @@ end
 function make_proxied_request(api_name, config, body, api_path, request_method, request_headers, query_params)
     -- Initialize circuit breaker for this API
     local cb_key = circuit_breaker.init(config.target_url, config.circuit_breaker or {})
+    
+    -- Add this line to track the start time for the entire request
+    local start_time = ngx.now()
     
     -- Check if circuit is open
     if not circuit_breaker.allow_request(cb_key) then
@@ -282,6 +286,7 @@ function make_proxied_request(api_name, config, body, api_path, request_method, 
     
     -- Define the actual request function to be used with retry
     local function make_request()
+        local request_start_time = ngx.now()  -- Rename to avoid confusion
         local res, err = httpc:request_uri(full_url, request_options)
         
         -- Handle errors
@@ -329,11 +334,18 @@ function make_proxied_request(api_name, config, body, api_path, request_method, 
         -- Record failure for circuit breaker
         circuit_breaker.record_failure(cb_key)
         if red then release_redis(red, redis_pool_idle_timeout, redis_pool_size) end
+        
+        -- Record API call statistics (failure)
+        api_stats.record_api_call(api_name, status_code, ngx.now() - start_time, err, api_path)
+        
         return nil, status_code, nil, err
     end
     
     -- Record success for circuit breaker
     circuit_breaker.record_success(cb_key)
+    
+    -- Record API call statistics (success)
+    api_stats.record_api_call(api_name, status_code, ngx.now() - start_time, nil, api_path)
     
     -- Cache the successful response in Redis if caching is enabled
     if config.enable_cache and red and status_code < 400 then
