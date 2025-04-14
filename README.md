@@ -4,9 +4,28 @@ A resilient proxy built with OpenResty and Redis, designed to provide caching, r
 
 ## Features
 
-- **Circuit Breaker Pattern**: Automatically detects failing services and prevents cascading failures
-- **Request Caching**: Reduces load on backend services by caching responses in Redis
-- **Proxy Support**: Optional proxy configuration for handling rate-limited APIs
+- **Circuit Breaker Pattern**: Automatically detects failing services and prevents cascading failures, the circuit breaker can be configured per API with the following options:
+    - `failure_threshold`: Number of failures before circuit is tripped (default: 5)
+    - `reset_timeout`: Time in seconds before circuit is reset (default: 30)
+    - `request_timeout`: Request timeout in milliseconds (default: 10000)
+    - `success_threshold`: Number of successful requests before circuit is reset (default: 2)
+- **Request Caching**: Reduces load on backend services by caching responses in Redis, the cache can be configured per API with the following options:
+    - `enable_cache`: Enable caching (default: false)
+    - `cache_ttl`: Cache time-to-live in seconds (default: 60)
+    - `cache_header_strategy`: Strategy to use for caching headers (default: "none")
+    - `cache_headers`: Headers to use for caching (default: "none")
+- **Proxy Support**: Optional proxy configuration for handling rate-limited APIs, the proxy can be configured per API with the following options:
+    - `use_proxy`: Enable proxy (default: false)
+- **Retry Mechanism**: Automatically retries failed requests with exponential backoff , the retry mechanism can be configured per API with the following options:
+
+    - `max_attempts`: Maximum number of retry attempts (default: 3)
+    - `initial_delay`: Initial delay in seconds before first retry (default: 1)
+    - `max_delay`: Maximum delay in seconds between retries (default: 10)
+    - `backoff_factor`: Exponential backoff multiplier (default: 2)
+    - `retry_on_status`: HTTP status codes that trigger a retry (default: 500, 502, 503, 504, 429)
+    - `retry_on_errors`: Connection errors that trigger a retry (default: timeout, connection refused, etc.)
+
+
 
 ## Getting Started
 

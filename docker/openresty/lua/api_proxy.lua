@@ -4,6 +4,7 @@ local utils = require "utils"
 local redis = require "resty.redis"
 local circuit_breaker = require "circuit_breaker"
 local api_config = require "api_config"
+local retry_handler = require "retry_handler"
 
 -- Main function
 local function main()
@@ -279,51 +280,63 @@ function make_proxied_request(api_name, config, body, api_path, request_method, 
     -- Log the request details
     utils.log(ngx.INFO, "Making " .. request_options.method .. " request to " .. full_url)
     
-    -- Make the request
-    local res, err = httpc:request_uri(full_url, request_options)
+    -- Define the actual request function to be used with retry
+    local function make_request()
+        local res, err = httpc:request_uri(full_url, request_options)
+        
+        -- Handle errors
+        if not res then
+            utils.log(ngx.ERR, "Request to " .. api_name .. " failed: " .. (err or "unknown error"))
+            return nil, 502, err
+        end
+        
+        -- Check status code
+        if res.status >= 500 then
+            utils.log(ngx.ERR, api_name .. " API returned error status: " .. res.status)
+            return nil, res.status, "API returned error status: " .. res.status
+        end
+        
+        -- Parse response if it's JSON
+        local response_data
+        local content_type = res.headers["content-type"] or ""
+        
+        if content_type:find("application/json") then
+            local parse_err
+            response_data, parse_err = utils.parse_json(res.body)
+            if not response_data then
+                utils.log(ngx.ERR, "Failed to parse " .. api_name .. " response: " .. (parse_err or "unknown error"))
+                return nil, 502, "Failed to parse response: " .. (parse_err or "unknown error")
+            end
+        else
+            -- For non-JSON responses, just return the raw body
+            response_data = { body = res.body }
+        end
+        
+        return response_data, res.status, nil, res.headers
+    end
     
-    -- Handle errors
-    if not res then
-        utils.log(ngx.ERR, "Request to " .. api_name .. " failed: " .. (err or "unknown error"))
+    -- Execute the request with retry logic if configured
+    local response_data, status_code, err, response_headers
+    
+    if config.retry then
+        response_data, status_code, err, response_headers = retry_handler.with_retries(make_request, config.retry)
+    else
+        response_data, status_code, err, response_headers = make_request()
+    end
+    
+    -- Handle the final result
+    if not response_data then
         -- Record failure for circuit breaker
         circuit_breaker.record_failure(cb_key)
         if red then release_redis(red, redis_pool_idle_timeout, redis_pool_size) end
-        return nil, 502, nil, "Failed to make request: " .. (err or "unknown error")
-    end
-    
-    -- Check status code
-    if res.status >= 500 then
-        utils.log(ngx.ERR, api_name .. " API returned error status: " .. res.status)
-        -- Record failure for circuit breaker only for server errors
-        circuit_breaker.record_failure(cb_key)
-        if red then release_redis(red, redis_pool_idle_timeout, redis_pool_size) end
-        return nil, res.status, res.headers, "API returned error status: " .. res.status
-    end
-    
-    -- Parse response if it's JSON
-    local response_data
-    local content_type = res.headers["content-type"] or ""
-    
-    if content_type:find("application/json") then
-        local parse_err
-        response_data, parse_err = utils.parse_json(res.body)
-        if not response_data then
-            utils.log(ngx.ERR, "Failed to parse " .. api_name .. " response: " .. (parse_err or "unknown error"))
-            -- Record failure for circuit breaker
-            circuit_breaker.record_failure(cb_key)
-            if red then release_redis(red, redis_pool_idle_timeout, redis_pool_size) end
-            return nil, 502, nil, "Failed to parse response: " .. (parse_err or "unknown error")
-        end
-    else
-        -- For non-JSON responses, just return the raw body
-        response_data = { body = res.body }
+        return nil, status_code, nil, err
     end
     
     -- Record success for circuit breaker
     circuit_breaker.record_success(cb_key)
     
     -- Cache the successful response in Redis if caching is enabled
-    if config.enable_cache and red and res.status < 400 then
+    if config.enable_cache and red and status_code < 400 then
         -- Cache the response body
         local ok, set_err = red:setex(cache_key, cache_ttl, cjson.encode(response_data))
         if not ok then
@@ -332,10 +345,12 @@ function make_proxied_request(api_name, config, body, api_path, request_method, 
         
         -- Cache the response headers
         local headers_to_cache = {}
-        for k, v in pairs(res.headers) do
-            -- Only cache certain headers
-            if k == "content-type" or k == "etag" or k == "cache-control" or k == "last-modified" then
-                headers_to_cache[k] = v
+        if response_headers then
+            for k, v in pairs(response_headers) do
+                -- Only cache certain headers
+                if k == "content-type" or k == "etag" or k == "cache-control" or k == "last-modified" then
+                    headers_to_cache[k] = v
+                end
             end
         end
         
@@ -344,14 +359,14 @@ function make_proxied_request(api_name, config, body, api_path, request_method, 
         end
         
         -- Cache the status code
-        red:setex(cache_key .. ":status", cache_ttl, res.status)
+        red:setex(cache_key .. ":status", cache_ttl, status_code)
         
         release_redis(red, redis_pool_idle_timeout, redis_pool_size)
     elseif red then
         release_redis(red, redis_pool_idle_timeout, redis_pool_size)
     end
     
-    return response_data, res.status, res.headers
+    return response_data, status_code, response_headers
 end
 
 -- Function to get Redis connection

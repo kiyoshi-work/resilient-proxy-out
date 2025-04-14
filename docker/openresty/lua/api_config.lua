@@ -21,6 +21,14 @@ local api_configs = {
             reset_timeout = 30,
             request_timeout = 10000,
             success_threshold = 2
+        },
+        retry = {
+            max_attempts = 3,
+            initial_delay = 1,
+            max_delay = 10,
+            backoff_factor = 2,
+            retry_on_status = {500, 502, 503, 504, 429},
+            retry_on_errors = {"timeout", "connection refused", "connection reset", "socket", "host not found"}
         }
     },
     
@@ -44,6 +52,14 @@ local api_configs = {
             reset_timeout = 30,
             request_timeout = 10000,
             success_threshold = 2
+        },
+        retry = {
+            max_attempts = 3,
+            initial_delay = 0.5,
+            max_delay = 5,
+            backoff_factor = 2,
+            retry_on_status = {500, 502, 503, 504, 429},
+            retry_on_errors = {"timeout", "connection refused", "connection reset", "socket", "host not found"}
         }
     },
     
@@ -65,6 +81,14 @@ local api_configs = {
             reset_timeout = 60,
             request_timeout = 5000,
             success_threshold = 2
+        },
+        retry = {
+            max_attempts = 2,
+            initial_delay = 1,
+            max_delay = 3,
+            backoff_factor = 1.5,
+            retry_on_status = {500, 502, 503, 504},
+            retry_on_errors = {"timeout", "connection refused"}
         }
     },
     
