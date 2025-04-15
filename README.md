@@ -1,6 +1,6 @@
-# Resilient Proxy
+# Resilient Proxy Out
 
-A resilient proxy built with OpenResty and Redis, designed to provide caching, rate limiting, and proxying capabilities for third party APIs.
+A resilient proxy built with OpenResty (a powerful web platform that extends NGINX with Lua scripting capabilities), designed to provide caching, rate limiting, and proxying capabilities for third party APIs.
 
 ## Features
 
