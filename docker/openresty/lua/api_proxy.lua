@@ -7,6 +7,22 @@ local api_config = require "api_config"
 local retry_handler = require "retry_handler"
 local api_stats = require "api_stats"
 
+-- Add this near the top of the file with other utility functions
+local function table_clone(t)
+    if type(t) ~= "table" then return t end
+    local meta = getmetatable(t)
+    local target = {}
+    for k, v in pairs(t) do
+        if type(v) == "table" then
+            target[k] = table_clone(v)
+        else
+            target[k] = v
+        end
+    end
+    setmetatable(target, meta)
+    return target
+end
+
 -- Main function
 local function main()
     -- Get API name and path from nginx variables
@@ -257,16 +273,6 @@ function make_proxied_request(api_name, config, body, api_path, request_method, 
         request_options.body = body
     end
     
-    -- Add proxy settings if using a proxy
-    if use_proxy then
-        local proxy_username, proxy_password, proxy_host, proxy_port = parse_proxy_url(proxy_url)
-        
-        request_options.proxy = {
-            uri = "http://" .. proxy_host .. ":" .. proxy_port,
-            authorization = "Basic " .. ngx.encode_base64(proxy_username .. ":" .. proxy_password)
-        }
-    end
-    
     -- Construct the full URL
     local full_url = config.target_url
     if api_path and api_path ~= "" then
@@ -287,7 +293,35 @@ function make_proxied_request(api_name, config, body, api_path, request_method, 
     -- Define the actual request function to be used with retry
     local function make_request()
         local request_start_time = ngx.now()  -- Rename to avoid confusion
-        local res, err = httpc:request_uri(full_url, request_options)
+        
+        -- First try without proxy
+        local use_proxy_for_this_request = use_proxy
+        
+        -- If we're in a retry scenario and the previous attempt got rate limited,
+        -- we'll use the proxy for this attempt
+        local is_retry_after_rate_limit = ngx.ctx.rate_limited_attempt
+        
+        if not is_retry_after_rate_limit then
+            -- For the first attempt, don't use proxy regardless of config
+            use_proxy_for_this_request = false
+        end
+        
+        -- Prepare request options for this attempt
+        local current_request_options = table_clone(request_options)
+        
+        -- Add proxy settings if we should use proxy for this request
+        if use_proxy_for_this_request and proxy_url and proxy_url ~= "" then
+            local proxy_username, proxy_password, proxy_host, proxy_port = parse_proxy_url(proxy_url)
+            
+            current_request_options.proxy = {
+                uri = "http://" .. proxy_host .. ":" .. proxy_port,
+                authorization = "Basic " .. ngx.encode_base64(proxy_username .. ":" .. proxy_password)
+            }
+            utils.log(ngx.INFO, "Using proxy for " .. api_name .. " request to " .. full_url)
+        end
+        
+        -- Make the request
+        local res, err = httpc:request_uri(full_url, current_request_options)
         
         -- Handle errors
         if not res then
@@ -295,7 +329,15 @@ function make_proxied_request(api_name, config, body, api_path, request_method, 
             return nil, 502, err
         end
         
-        -- Check status code
+        -- Check if we got rate limited (429)
+        if res.status == 429 and not is_retry_after_rate_limit and use_proxy then
+            -- Mark that we got rate limited so the retry mechanism knows to use proxy
+            ngx.ctx.rate_limited_attempt = true
+            utils.log(ngx.WARN, "Rate limited (429) for " .. api_name .. ", will retry with proxy")
+            return nil, 429, "Rate limited, retrying with proxy"
+        end
+        
+        -- Check status code for other errors
         if res.status >= 500 then
             utils.log(ngx.ERR, api_name .. " API returned error status: " .. res.status)
             return nil, res.status, "API returned error status: " .. res.status

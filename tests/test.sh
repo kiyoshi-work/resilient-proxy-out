@@ -1,4 +1,4 @@
-curl 'http://localhost:8087/api/hyperliquid/test' \
+curl 'http://localhost:8087/api/hyperliquid/info' \
   -H 'Accept: */*' \
   -H 'Accept-Language: en-US,en;q=0.9,vi;q=0.8' \
   -H 'Connection: keep-alive' \
