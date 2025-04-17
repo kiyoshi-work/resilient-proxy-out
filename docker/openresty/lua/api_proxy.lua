@@ -294,15 +294,19 @@ function make_proxied_request(api_name, config, body, api_path, request_method, 
     local function make_request()
         local request_start_time = ngx.now()  -- Rename to avoid confusion
         
-        -- First try without proxy
-        local use_proxy_for_this_request = use_proxy
-        
-        -- If we're in a retry scenario and the previous attempt got rate limited,
-        -- we'll use the proxy for this attempt
+        -- Determine if we should use proxy based on the proxy_strategy
+        local use_proxy_for_this_request = false
+        local proxy_strategy = config.proxy_strategy or "on_rate_limit" -- Default to current behavior
         local is_retry_after_rate_limit = ngx.ctx.rate_limited_attempt
         
-        if not is_retry_after_rate_limit then
-            -- For the first attempt, don't use proxy regardless of config
+        if proxy_strategy == "always" then
+            -- Always use proxy if configured
+            use_proxy_for_this_request = use_proxy
+        elseif proxy_strategy == "on_rate_limit" then
+            -- Use proxy only after rate limit (current behavior)
+            use_proxy_for_this_request = use_proxy and is_retry_after_rate_limit
+        elseif proxy_strategy == "never" then
+            -- Never use proxy regardless of rate limits
             use_proxy_for_this_request = false
         end
         
@@ -313,11 +317,32 @@ function make_proxied_request(api_name, config, body, api_path, request_method, 
         if use_proxy_for_this_request and proxy_url and proxy_url ~= "" then
             local proxy_username, proxy_password, proxy_host, proxy_port = parse_proxy_url(proxy_url)
             
-            current_request_options.proxy = {
-                uri = "http://" .. proxy_host .. ":" .. proxy_port,
-                authorization = "Basic " .. ngx.encode_base64(proxy_username .. ":" .. proxy_password)
-            }
-            utils.log(ngx.INFO, "Using proxy for " .. api_name .. " request to " .. full_url)
+            -- Log the parsed proxy information for debugging
+            utils.log(ngx.INFO, "Proxy details - Host: " .. proxy_host .. ", Port: " .. proxy_port .. 
+                      ", Username: " .. proxy_username)
+            
+            -- Configure keepalive settings for the HTTP client
+            httpc:set_keepalive(1000, 5)  -- keepalive timeout 1000ms, pool size 5
+            
+            -- Fix proxy authentication by using the correct format
+            local ok, proxy_err = httpc:set_proxy_options({
+                http_proxy = "http://" .. proxy_host .. ":" .. proxy_port,
+                https_proxy = "http://" .. proxy_host .. ":" .. proxy_port,
+                http_proxy_authorization = "Basic " .. ngx.encode_base64("xruolauf-US-GB-rotate:1cysf56k28h3")
+            })
+            
+            if not ok then
+                utils.log(ngx.ERR, "Failed to set proxy options: " .. (proxy_err or "unknown error"))
+            else
+                utils.log(ngx.INFO, "Using proxy for " .. api_name .. " request to " .. full_url)
+            end
+            
+            -- Add Connection keep-alive header
+            if not current_request_options.headers then
+                current_request_options.headers = {}
+            end
+            current_request_options.headers["Connection"] = "keep-alive"
+            current_request_options.headers["Proxy-Authorization"] = "Basic " .. ngx.encode_base64("xruolauf-US-GB-rotate:1cysf56k28h3")
         end
         
         -- Make the request
@@ -330,7 +355,7 @@ function make_proxied_request(api_name, config, body, api_path, request_method, 
         end
         
         -- Check if we got rate limited (429)
-        if res.status == 429 and not is_retry_after_rate_limit and use_proxy then
+        if res.status == 429 and proxy_strategy ~= "never" and use_proxy then
             -- Mark that we got rate limited so the retry mechanism knows to use proxy
             ngx.ctx.rate_limited_attempt = true
             utils.log(ngx.WARN, "Rate limited (429) for " .. api_name .. ", will retry with proxy")

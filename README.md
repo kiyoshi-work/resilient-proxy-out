@@ -16,6 +16,7 @@ A resilient proxy built with OpenResty (a powerful web platform that extends NGI
     - `cache_headers`: Headers to use for caching (default: "none")
 - **Proxy Support**: Optional proxy configuration for handling rate-limited APIs, the proxy can be configured per API with the following options:
     - `use_proxy`: Enable proxy (default: false)
+    - `proxy_strategy`: can be "always", "on_rate_limit", or "never" (default: "on_rate_limit")
 - **Retry Mechanism**: Automatically retries failed requests with exponential backoff , the retry mechanism can be configured per API with the following options:
 
     - `max_attempts`: Maximum number of retry attempts (default: 3)
@@ -48,8 +49,8 @@ A resilient proxy built with OpenResty (a powerful web platform that extends NGI
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/kiyoshitaro/resilient-proxy.git
-   cd resilient-proxy
+   git clone https://github.com/kiyoshitaro/resilient-proxy-out.git
+   cd resilient-proxy-out
    ```
 
 2. Configure your environment:
@@ -97,7 +98,7 @@ docker/
 Send requests to the gateway on port 8087:
 
 ```bash
-curl 'http://localhost:8080/hyperliquid' \
+curl 'http://localhost:8087/api/hyperliquid/info' \
   -H 'Content-Type: application/json' \
   --data-raw '{"type":"frontendOpenOrders","user":"0x5887de8d37c9c2550a4d0b86127c43b2e1904545"'
 ```
