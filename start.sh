@@ -10,5 +10,5 @@ if [[ ! -f $DOCKER_LOCAL ]]; then
     cp $DOCKER $DOCKER_LOCAL
     echo "CREATED $DOCKER_LOCAL"
 fi
-docker compose -f docker-compose.local.yml up --build -d --remove-orphans
+docker compose -f $DOCKER_LOCAL up --build -d --remove-orphans
 

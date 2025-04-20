@@ -2,6 +2,35 @@ local _M = {}
 
 -- API configurations
 local api_configs = {
+    ip = {
+        target_url = "https://ipinfo.io",
+        method = "GET",
+        requires_body = false,
+        enable_cache = false,
+        cache_ttl = 60,  -- 60 seconds
+        cache_header_strategy = "none",  -- Use "all" to include all headers in cache key
+        use_proxy = true,
+        proxy_strategy = "round_robin", -- can be "round_robin", "on_rate_limit", or "never"
+        headers = {
+            ["Content-Type"] = "application/json",
+            ["Accept"] = "application/json"
+        },
+        forward_headers = false,  -- Don't forward client headers
+        circuit_breaker = {
+            failure_threshold = 5,
+            reset_timeout = 30,
+            request_timeout = 10000,
+            success_threshold = 2
+        },
+        retry = {
+            max_attempts = 3,
+            initial_delay = 1,
+            max_delay = 10,
+            backoff_factor = 2,
+            retry_on_status = {500, 502, 503, 504, 429},
+            retry_on_errors = {"timeout", "connection refused", "connection reset", "socket", "host not found"}
+        }
+    },
     -- Hyperliquid API configuration
     hyperliquid = {
         target_url = "https://api.hyperliquid.xyz",
@@ -11,7 +40,7 @@ local api_configs = {
         cache_ttl = 60,  -- 60 seconds
         cache_header_strategy = "none",  -- Use "all" to include all headers in cache key
         use_proxy = true,
-        proxy_strategy = "always", -- can be "always", "on_rate_limit", or "never"
+        proxy_strategy = "round_robin", -- can be "always", "on_rate_limit", or "never"
         headers = {
             ["Content-Type"] = "application/json",
             ["Accept"] = "application/json"

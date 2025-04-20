@@ -6,7 +6,6 @@ local circuit_breaker = require "circuit_breaker"
 local api_config = require "api_config"
 local retry_handler = require "retry_handler"
 local api_stats = require "api_stats"
-
 -- Add this near the top of the file with other utility functions
 local function table_clone(t)
     if type(t) ~= "table" then return t end
@@ -21,6 +20,69 @@ local function table_clone(t)
     end
     setmetatable(target, meta)
     return target
+end
+
+-- Add this function to manage static proxy IPs with round robin strategy
+local function get_next_proxy()
+    -- Get proxies from PROXY_URL environment variable
+    local proxy_url = os.getenv("PROXY_URLS")
+    local static_proxies = {}
+    
+    if proxy_url and proxy_url ~= "" then
+        -- Check if PROXY_URL contains multiple proxies (separated by semicolons)
+        if proxy_url:find(";") then
+            -- Parse multiple proxies
+            for single_proxy_url in proxy_url:gmatch("[^;]+") do
+                local proxy_username, proxy_password, proxy_host, proxy_port = parse_proxy_url(single_proxy_url)
+                table.insert(static_proxies, {
+                    host = proxy_host,
+                    port = proxy_port,
+                    username = proxy_username,
+                    password = proxy_password
+                })
+            end
+        else
+            -- Single proxy URL
+            local proxy_username, proxy_password, proxy_host, proxy_port = parse_proxy_url(proxy_url)
+            table.insert(static_proxies, {
+                host = proxy_host,
+                port = proxy_port,
+                username = proxy_username,
+                password = proxy_password
+            })
+        end
+    end
+    
+    -- If no valid proxies found, use a default proxy
+    if #static_proxies == 0 then
+        -- Fallback to a default proxy if needed
+        table.insert(static_proxies, {
+            host = "default-proxy.example.com",
+            port = 8080,
+            username = "default-user",
+            password = "default-pass"
+        })
+        utils.log(ngx.WARN, "No proxies found in PROXY_URL, using default proxy")
+    end
+    
+    -- Initialize or increment the counter in shared dict
+    local shared_dict = ngx.shared.proxy_counter
+    if not shared_dict then
+        ngx.log(ngx.ERR, "Shared dictionary 'proxy_counter' not found")
+        -- Return the first proxy as fallback
+        return static_proxies[1]
+    end
+    
+    local counter, err = shared_dict:incr("counter", 1)
+    if not counter then
+        -- Key doesn't exist, initialize it
+        shared_dict:set("counter", 1)
+        counter = 1
+    end
+    
+    -- Get the proxy using modulo to implement round robin
+    local proxy_index = (counter % #static_proxies) + 1
+    return static_proxies[proxy_index]
 end
 
 -- Main function
@@ -257,8 +319,7 @@ function make_proxied_request(api_name, config, body, api_path, request_method, 
     end
     
     -- Get proxy configuration
-    local proxy_url = os.getenv("PROXY_URL")
-    local use_proxy = config.use_proxy and proxy_url and proxy_url ~= ""
+    local use_proxy = config.use_proxy
     
     -- Prepare request options
     local request_options = {
@@ -299,36 +360,35 @@ function make_proxied_request(api_name, config, body, api_path, request_method, 
         local proxy_strategy = config.proxy_strategy or "on_rate_limit" -- Default to current behavior
         local is_retry_after_rate_limit = ngx.ctx.rate_limited_attempt
         
-        if proxy_strategy == "always" then
-            -- Always use proxy if configured
-            use_proxy_for_this_request = use_proxy
-        elseif proxy_strategy == "on_rate_limit" then
+       if proxy_strategy == "on_rate_limit" then
             -- Use proxy only after rate limit (current behavior)
             use_proxy_for_this_request = use_proxy and is_retry_after_rate_limit
         elseif proxy_strategy == "never" then
             -- Never use proxy regardless of rate limits
             use_proxy_for_this_request = false
+        elseif proxy_strategy == "round_robin" then
+            -- Always use proxy with round robin strategy
+            use_proxy_for_this_request = use_proxy
         end
         
         -- Prepare request options for this attempt
         local current_request_options = table_clone(request_options)
         
         -- Add proxy settings if we should use proxy for this request
-        if use_proxy_for_this_request and proxy_url and proxy_url ~= "" then
-            local proxy_username, proxy_password, proxy_host, proxy_port = parse_proxy_url(proxy_url)
-            
-            -- Log the parsed proxy information for debugging
-            utils.log(ngx.INFO, "Proxy details - Host: " .. proxy_host .. ", Port: " .. proxy_port .. 
-                      ", Username: " .. proxy_username)
-            
+        if use_proxy_for_this_request then
             -- Configure keepalive settings for the HTTP client
             httpc:set_keepalive(1000, 5)  -- keepalive timeout 1000ms, pool size 5
+            local proxy_info = get_next_proxy()
             
-            -- Fix proxy authentication by using the correct format
+            -- Log the proxy information for debugging
+            utils.log(ngx.INFO, "Proxy details - Host: " .. proxy_info.host .. ", Port: " .. proxy_info.port .. 
+                      ", Username: " .. proxy_info.username)
+            
+            -- Set proxy options
             local ok, proxy_err = httpc:set_proxy_options({
-                http_proxy = "http://" .. proxy_host .. ":" .. proxy_port,
-                https_proxy = "http://" .. proxy_host .. ":" .. proxy_port,
-                http_proxy_authorization = "Basic " .. ngx.encode_base64("xruolauf-US-GB-rotate:1cysf56k28h3")
+                http_proxy = "http://" .. proxy_info.host .. ":" .. proxy_info.port,
+                https_proxy = "http://" .. proxy_info.host .. ":" .. proxy_info.port,
+                http_proxy_authorization = "Basic " .. ngx.encode_base64(proxy_info.username .. ":" .. proxy_info.password)
             })
             
             if not ok then
@@ -342,7 +402,8 @@ function make_proxied_request(api_name, config, body, api_path, request_method, 
                 current_request_options.headers = {}
             end
             current_request_options.headers["Connection"] = "keep-alive"
-            current_request_options.headers["Proxy-Authorization"] = "Basic " .. ngx.encode_base64("xruolauf-US-GB-rotate:1cysf56k28h3")
+            current_request_options.headers["Proxy-Authorization"] = "Basic " .. 
+                ngx.encode_base64(proxy_info.username .. ":" .. proxy_info.password)
         end
         
         -- Make the request

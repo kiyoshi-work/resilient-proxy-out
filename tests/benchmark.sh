@@ -1,6 +1,6 @@
 #!/bin/bash
 
-RUNS=2
+RUNS=1
 TOTAL_TIME=0
 
 echo "Start benchmark $RUNS times..."
@@ -13,10 +13,9 @@ do
   START_TIME=$(date +%s.%N)
   
   # Save response to variable instead of redirecting to /dev/null
-  RESPONSE=$(curl -s -X POST \
+  RESPONSE=$(curl -s -X GET \
     -H "Content-Type: application/json" \
-    -d '{"type":"clearinghouseState", "user": "0xf6779a38203d47718139d3254237c43201493f00"}' \
-    "http://localhost:8087/api/hyperliquid/info")
+    "http://localhost:8087/api/ip")
   
   END_TIME=$(date +%s.%N)
 
