@@ -16,7 +16,7 @@ A resilient proxy built with OpenResty (a powerful web platform that extends NGI
     - `cache_headers`: Headers to use for caching (default: "none")
 - **Proxy Support**: Optional proxy configuration for handling rate-limited APIs, the proxy can be configured per API with the following options:
     - `use_proxy`: Enable proxy (default: false)
-    - `proxy_strategy`: can be "always", "on_rate_limit", or "never" (default: "on_rate_limit")
+    - `proxy_strategy`: can be "round_robin", "on_rate_limit", or "never" (default: "round_robin")
 - **Retry Mechanism**: Automatically retries failed requests with exponential backoff , the retry mechanism can be configured per API with the following options:
 
     - `max_attempts`: Maximum number of retry attempts (default: 3)

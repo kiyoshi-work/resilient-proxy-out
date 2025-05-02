@@ -357,7 +357,7 @@ function make_proxied_request(api_name, config, body, api_path, request_method, 
         
         -- Determine if we should use proxy based on the proxy_strategy
         local use_proxy_for_this_request = false
-        local proxy_strategy = config.proxy_strategy or "on_rate_limit" -- Default to current behavior
+        local proxy_strategy = config.proxy_strategy or "round_robin" -- Default to current behavior
         local is_retry_after_rate_limit = ngx.ctx.rate_limited_attempt
         
        if proxy_strategy == "on_rate_limit" then
