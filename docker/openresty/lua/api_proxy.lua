@@ -373,11 +373,16 @@ function make_proxied_request(api_name, config, body, api_path, request_method, 
         
         -- Prepare request options for this attempt
         local current_request_options = table_clone(request_options)
-        
+
+        -- Enable connection pooling at the request_uri level.
+        -- request_uri internally returns the connection to the pool after
+        -- the response body is fully read, keyed by (host, port, proxy, ssl).
+        -- These tunables override the per-request defaults.
+        current_request_options.keepalive_timeout = 60000  -- 60s idle in pool
+        current_request_options.keepalive_pool = 50        -- max idle conns per pool key
+
         -- Add proxy settings if we should use proxy for this request
         if use_proxy_for_this_request then
-            -- Configure keepalive settings for the HTTP client
-            httpc:set_keepalive(1000, 5)  -- keepalive timeout 1000ms, pool size 5
             local proxy_info = get_next_proxy()
             
             -- Log the proxy information for debugging
