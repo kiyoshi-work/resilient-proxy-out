@@ -22,67 +22,116 @@ local function table_clone(t)
     return target
 end
 
--- Add this function to manage static proxy IPs with round robin strategy
-local function get_next_proxy()
-    -- Get proxies from PROXY_URL environment variable
+-- Cache the parsed proxy list at the worker level. PROXY_URLS is set at
+-- container start and only changes on restart, so re-parsing each call wastes
+-- cycles.
+local _cached_proxies = nil
+
+local function load_static_proxies()
+    if _cached_proxies then return _cached_proxies end
+
     local proxy_url = os.getenv("PROXY_URLS")
-    local static_proxies = {}
-    
+    local proxies = {}
+
     if proxy_url and proxy_url ~= "" then
-        -- Check if PROXY_URL contains multiple proxies (separated by semicolons)
         if proxy_url:find(";") then
-            -- Parse multiple proxies
             for single_proxy_url in proxy_url:gmatch("[^;]+") do
-                local proxy_username, proxy_password, proxy_host, proxy_port = parse_proxy_url(single_proxy_url)
-                table.insert(static_proxies, {
-                    host = proxy_host,
-                    port = proxy_port,
-                    username = proxy_username,
-                    password = proxy_password
-                })
+                local u, p, h, port = parse_proxy_url(single_proxy_url)
+                table.insert(proxies, { host = h, port = port, username = u, password = p })
             end
         else
-            -- Single proxy URL
-            local proxy_username, proxy_password, proxy_host, proxy_port = parse_proxy_url(proxy_url)
-            table.insert(static_proxies, {
-                host = proxy_host,
-                port = proxy_port,
-                username = proxy_username,
-                password = proxy_password
-            })
+            local u, p, h, port = parse_proxy_url(proxy_url)
+            table.insert(proxies, { host = h, port = port, username = u, password = p })
         end
     end
-    
-    -- If no valid proxies found, use a default proxy
-    if #static_proxies == 0 then
-        -- Fallback to a default proxy if needed
-        table.insert(static_proxies, {
+
+    if #proxies == 0 then
+        table.insert(proxies, {
             host = "default-proxy.example.com",
             port = 8080,
             username = "default-user",
             password = "default-pass"
         })
-        utils.log(ngx.WARN, "No proxies found in PROXY_URL, using default proxy")
+        utils.log(ngx.WARN, "No proxies found in PROXY_URLS, using default proxy")
     end
-    
-    -- Initialize or increment the counter in shared dict
+
+    _cached_proxies = proxies
+    return proxies
+end
+
+-- Round-robin selector: distributes evenly across the full proxy list.
+local function pick_round_robin(proxies)
     local shared_dict = ngx.shared.proxy_counter
     if not shared_dict then
         ngx.log(ngx.ERR, "Shared dictionary 'proxy_counter' not found")
-        -- Return the first proxy as fallback
-        return static_proxies[1]
+        return proxies[1]
     end
-    
-    local counter, err = shared_dict:incr("counter", 1)
-    if not counter then
-        -- Key doesn't exist, initialize it
-        shared_dict:set("counter", 1)
-        counter = 1
+    local counter = shared_dict:incr("rr_counter", 1, 0)
+    return proxies[(counter % #proxies) + 1]
+end
+
+-- Sticky selector: hash a stable key to a fixed proxy. Same key always lands
+-- on the same proxy, which keeps the keepalive pool warm for that
+-- (host, port, proxy) tuple. Keys with low cardinality (e.g. api_name alone)
+-- collapse all traffic onto one proxy and defeat per-IP rate limiting --
+-- prefer client_ip or a user-scoped header.
+local function pick_sticky(proxies, key)
+    if not key or key == "" then key = "default" end
+    local hash = ngx.crc32_short(key)
+    return proxies[(hash % #proxies) + 1]
+end
+
+-- Subset selector: round-robin within the first N proxies (rotated by
+-- offset). Concentrating traffic onto fewer proxies raises pool hit rate.
+-- On a 429 we bump the offset so the active window slides to the next N.
+local function pick_subset(proxies, subset_size)
+    local shared_dict = ngx.shared.proxy_counter
+    if not shared_dict then return proxies[1] end
+    local n = math.min(subset_size or 3, #proxies)
+    local counter = shared_dict:incr("subset_counter", 1, 0)
+    local offset = shared_dict:get("subset_offset") or 0
+    local idx = ((counter - 1) % n + offset) % #proxies + 1
+    return proxies[idx]
+end
+
+local function rotate_subset()
+    local shared_dict = ngx.shared.proxy_counter
+    if shared_dict then shared_dict:incr("subset_offset", 1, 0) end
+end
+
+-- Resolve the sticky key from a configurable source. Supports:
+--   "client_ip" (default), "api_name", "header:<name>"
+local function resolve_sticky_key(source, ctx)
+    if not source or source == "client_ip" then
+        return ngx.var.remote_addr or "unknown"
+    elseif source == "api_name" then
+        return ctx.api_name or "unknown"
+    elseif source:sub(1, 7) == "header:" then
+        local name = source:sub(8):lower()
+        local headers = ctx.request_headers or {}
+        return headers[name] or "missing"
     end
-    
-    -- Get the proxy using modulo to implement round robin
-    local proxy_index = (counter % #static_proxies) + 1
-    return static_proxies[proxy_index]
+    return "default"
+end
+
+local function get_next_proxy(strategy, ctx)
+    local proxies = load_static_proxies()
+    ctx = ctx or {}
+
+    -- After a 429 the configured proxy already failed. For sticky/subset we
+    -- fall back to round-robin so the retry hits a different proxy.
+    if ctx.is_retry_after_rate_limit then
+        return pick_round_robin(proxies)
+    end
+
+    if strategy == "sticky" then
+        local key = resolve_sticky_key(ctx.sticky_key_source, ctx)
+        return pick_sticky(proxies, key)
+    elseif strategy == "subset" then
+        return pick_subset(proxies, ctx.subset_size)
+    else
+        return pick_round_robin(proxies)
+    end
 end
 
 -- Main function
@@ -360,14 +409,15 @@ function make_proxied_request(api_name, config, body, api_path, request_method, 
         local proxy_strategy = config.proxy_strategy or "round_robin" -- Default to current behavior
         local is_retry_after_rate_limit = ngx.ctx.rate_limited_attempt
         
-       if proxy_strategy == "on_rate_limit" then
+        if proxy_strategy == "on_rate_limit" then
             -- Use proxy only after rate limit (current behavior)
             use_proxy_for_this_request = use_proxy and is_retry_after_rate_limit
         elseif proxy_strategy == "never" then
             -- Never use proxy regardless of rate limits
             use_proxy_for_this_request = false
-        elseif proxy_strategy == "round_robin" then
-            -- Always use proxy with round robin strategy
+        else
+            -- "round_robin", "sticky", "subset" all unconditionally use proxy.
+            -- The choice between them only affects which proxy is picked.
             use_proxy_for_this_request = use_proxy
         end
         
@@ -383,7 +433,13 @@ function make_proxied_request(api_name, config, body, api_path, request_method, 
 
         -- Add proxy settings if we should use proxy for this request
         if use_proxy_for_this_request then
-            local proxy_info = get_next_proxy()
+            local proxy_info = get_next_proxy(proxy_strategy, {
+                api_name = api_name,
+                request_headers = request_headers,
+                sticky_key_source = config.proxy_sticky_key,
+                subset_size = config.proxy_subset_size,
+                is_retry_after_rate_limit = is_retry_after_rate_limit,
+            })
             
             -- Log the proxy information for debugging
             utils.log(ngx.INFO, "Proxy details - Host: " .. proxy_info.host .. ", Port: " .. proxy_info.port .. 
@@ -424,6 +480,15 @@ function make_proxied_request(api_name, config, body, api_path, request_method, 
         if res.status == 429 and proxy_strategy ~= "never" and use_proxy then
             -- Mark that we got rate limited so the retry mechanism knows to use proxy
             ngx.ctx.rate_limited_attempt = true
+
+            -- For subset strategy, slide the active window so the next retry
+            -- uses a different proxy. round_robin/sticky already pick a
+            -- different proxy on retry (counter increments / different
+            -- request key on retry path).
+            if proxy_strategy == "subset" then
+                rotate_subset()
+            end
+
             utils.log(ngx.WARN, "Rate limited (429) for " .. api_name .. ", will retry with proxy")
             return nil, 429, "Rate limited, retrying with proxy"
         end

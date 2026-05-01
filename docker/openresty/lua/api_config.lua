@@ -40,7 +40,14 @@ local api_configs = {
         cache_ttl = 60,  -- 60 seconds
         cache_header_strategy = "none",  -- Use "all" to include all headers in cache key
         use_proxy = true,
-        proxy_strategy = "round_robin", -- can be "always", "on_rate_limit", or "never"
+        -- Hyperliquid rate limit: 600 req/min per IP = 10 rps per IP.
+        -- Subset(3) concentrates traffic onto 3 proxies for warm keepalive
+        -- pools while giving 30 rps aggregate headroom (3 * 10 rps). On 429
+        -- we slide the window to the next 3 proxies, evicting the rate-limited
+        -- one. Increase proxy_subset_size if peak load > 30 rps; decrease for
+        -- maximum pool reuse if peak load is well under 10 rps.
+        proxy_strategy = "subset", -- "round_robin" | "sticky" | "subset" | "on_rate_limit" | "never"
+        proxy_subset_size = 3,
         headers = {
             ["Content-Type"] = "application/json",
             ["Accept"] = "application/json"

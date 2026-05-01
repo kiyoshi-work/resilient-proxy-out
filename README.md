@@ -16,7 +16,14 @@ A resilient proxy built with OpenResty (a powerful web platform that extends NGI
     - `cache_headers`: Headers to use for caching (default: "none")
 - **Proxy Support**: Optional proxy configuration for handling rate-limited APIs, the proxy can be configured per API with the following options:
     - `use_proxy`: Enable proxy (default: false)
-    - `proxy_strategy`: can be "round_robin", "on_rate_limit", or "never" (default: "round_robin")
+    - `proxy_strategy`: proxy selection strategy (default: `round_robin`). One of:
+        - `round_robin` — distribute every request across the full proxy list. Maximum IP utilization, lowest keepalive pool hit rate.
+        - `sticky` — hash a key (configurable via `proxy_sticky_key`) to a fixed proxy. Same key always lands on the same proxy → keepalive pool stays warm per key. On `429`, the retry falls back to `round_robin` to escape the limited proxy.
+        - `subset` — round-robin within the first N proxies (configurable via `proxy_subset_size`). Traffic concentrates onto fewer proxies → higher pool hit rate. On `429`, the active window slides to the next N proxies.
+        - `on_rate_limit` — direct connection by default; only switch to a proxy after a `429` is observed.
+        - `never` — never use a proxy.
+    - `proxy_sticky_key` (only when `proxy_strategy = "sticky"`): key source for the hash. One of `client_ip` (default), `api_name`, or `header:<name>`. Avoid low-cardinality keys like `api_name` alone — they collapse all traffic onto one proxy and defeat per-IP rate limiting.
+    - `proxy_subset_size` (only when `proxy_strategy = "subset"`): number of proxies in the active window (default: 3).
 - **Retry Mechanism**: Automatically retries failed requests with exponential backoff , the retry mechanism can be configured per API with the following options:
 
     - `max_attempts`: Maximum number of retry attempts (default: 3)
@@ -180,12 +187,74 @@ lua_socket_pool_size 100;
 
 #### Tại sao chỉ fix code chưa đủ — cần đổi proxy strategy
 
-Sau patch, pool work đúng về kỹ thuật. Nhưng nếu giữ nguyên `round_robin` thuần, pool hit rate vẫn thấp do request bị xé đều ra N proxy. Để tối ưu thực sự, có 2 hướng:
+Sau patch, pool work đúng về kỹ thuật. Nhưng nếu giữ nguyên `round_robin` thuần, pool hit rate vẫn thấp do request bị xé đều ra N proxy. Đã thêm 2 strategy mới: `sticky` và `subset`.
 
-1. **Sticky / hash-based proxy selection**: hash theo `api_name` (hoặc client IP) → cùng key → cùng proxy → cùng pool key → reuse cao.
-2. **Giảm số proxy active đồng thời**: thay vì rotate hết list, giữ subset nhỏ (2-3 proxy) trừ khi hit rate limit thì mới swap.
+##### `sticky` — hash-based selection
 
-Trade-off: sticky làm rate limit per-IP dễ chạm hơn — phù hợp khi backend API rate limit cao hoặc traffic phân bố theo `api_name` không đồng đều.
+Hash 1 stable key (client IP, header, api name) → mapping deterministic vào 1 proxy cố định. Cùng key → cùng proxy → cùng pool key → keepalive reuse rất cao.
+
+Config:
+
+```lua
+proxy_strategy = "sticky",
+proxy_sticky_key = "client_ip",   -- "client_ip" | "api_name" | "header:<name>"
+```
+
+Implementation: `ngx.crc32_short(key) % #proxies + 1`.
+
+Trade-off: rate limit per-IP dễ đập hơn. 1 client burst quá hạn → 429 vì luôn đi 1 proxy. Mitigation: trên `429`, retry path tự động fallback sang `round_robin` để thoát proxy bị limit.
+
+Phù hợp khi: traffic per-client thấp hơn nhiều so với rate limit per-IP của upstream.
+
+##### `subset` — active window
+
+Round-robin trong subset N proxy đầu (default 3) thay vì full list. Traffic dồn vào ít proxy hơn → pool hit rate tăng. Trên `429`, offset của window dịch lên 1 → swap proxy bị limit ra ngoài subset.
+
+Config:
+
+```lua
+proxy_strategy = "subset",
+proxy_subset_size = 3,
+```
+
+Phù hợp khi: traffic vừa phải, cần balance giữa pool warmth và headroom với rate limit.
+
+##### Bảng so sánh nhanh
+
+| Strategy | Pool hit | IP utilization | 429 risk | Phù hợp |
+|----------|----------|----------------|----------|---------|
+| `round_robin` | Thấp | Tốt nhất | Thấp nhất | Traffic rất cao, cần rate limit budget tối đa |
+| `sticky` | Cao nhất | Tệ (1 client = 1 IP) | Cao cho hot client | Per-client traffic nhỏ |
+| `subset` | Trung bình-cao | Trung bình | Trung bình, có swap | Default an toàn cho hầu hết case |
+| `on_rate_limit` | N/A khi direct | N/A | N/A | Chỉ proxy khi cần thiết |
+| `never` | N/A | N/A | N/A | Local/internal API |
+
+##### Case Hyperliquid (`api.hyperliquid.xyz`)
+
+Rate limit upstream: **600 req/min per IP = 10 rps per IP**.
+
+Math:
+
+- `round_robin` với N proxy: aggregate ~ N * 10 rps. IP utilization tốt nhưng pool hit rate ~ 0 (request xé đều).
+- `sticky` by `client_ip`: 1 client max = 10 rps. Trên 10 rps/client → 429 liên tục dù aggregate còn dư.
+- `subset(3)`: 3 proxy active = 30 rps aggregate. Pool warm cho 3 host. 429 ở 1 proxy → window slide, proxy đó out, proxy mới in.
+
+Config đã chọn:
+
+```lua
+hyperliquid = {
+    target_url = "https://api.hyperliquid.xyz",
+    use_proxy = true,
+    proxy_strategy = "subset",
+    proxy_subset_size = 3,
+    ...
+}
+```
+
+Tuning:
+- Peak aggregate > 30 rps → tăng `proxy_subset_size` (mỗi +1 = +10 rps headroom, giảm pool hit rate).
+- Peak aggregate << 10 rps → giảm xuống 1 hoặc dùng `sticky`/`on_rate_limit` để pool hit cực đại.
+- Per-client traffic dominate (1 client > 10 rps) → cần kết hợp app-level throttle, không strategy nào fix được giới hạn 10 rps/IP nếu client spam vào cùng key.
 
 #### Verify
 
